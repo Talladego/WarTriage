@@ -1,0 +1,14 @@
+# Old/backup files
+old/
+*\ -\ Copy.*
+*.lua~
+*.lua.bak
+*.lua.old
+
+# VS Code workspace file
+*.code-workspace
+
+# OS metadata
+Thumbs.db
+.DS_Store
+desktop.ini
