@@ -28,7 +28,7 @@ local function getInfoTabText()
 		"Only players within healing range are considered, and a limited line-of-sight check is performed.",
 		"Direct auto-targeting does not apply to non-party warband or scenario players; those still use the macro path.",
 		"",
-		"The Settings tab enables or disables features. The Priorities tab adjusts the selection thresholds."
+		"The Settings tab enables or disables features. The Priorities tab sets role ranks (1 = heal first when similarly hurt), hurt threshold, rez safety threshold, and rank crossover."
 	}, "\n")
 end
 
@@ -88,6 +88,26 @@ function WarTriage_Config.ResetToDefaults()
 	end
 
 	WarTriage.Print("Settings reset to defaults.")
+end
+
+local function priorityRankFromCombo(value)
+	if type(value) == "wstring" then
+		value = tonumber(WStringToString(value))
+	else
+		value = tonumber(value)
+	end
+	return math.min(math.max(value or 1, 1), 5)
+end
+
+local function addPriorityRankCombo(labelText, settingsKey)
+	local element = GUI("combobox", labelText, settingsKey, priorityRankFromCombo)
+	element.label:Font("font_default_text_small")
+	element.label:Align("left")
+	element.combo:AnchorTo(element.label, "right", "right")
+	for rank = 1, 5 do
+		element.combo:Add(rank)
+	end
+	return element
 end
 
 local function createInfoTab()
@@ -174,35 +194,29 @@ function WarTriage_Config.Slash(input)
 		textbox.edit:Resize(50)
 
 		GUI:AddTab("Priorities")
-		textbox = GUI("textbox", "Always prioritize self if health % below:", "selfTargetPct")
+		textbox = GUI("textbox", "Only target players below this health %:", "hurtThreshold")
 		textbox.label:Font("font_default_text_small")
 		textbox.label:Align("left")
 		textbox.edit:AnchorTo(textbox.label, "right", "right")
 		textbox.edit:Resize(50)
 
-		textbox = GUI("textbox", "Then alive healers with health % below:", "healerTargetPct")
+		textbox = GUI("textbox", "Rez safety threshold (%):", "rezSafetyThreshold")
 		textbox.label:Font("font_default_text_small")
 		textbox.label:Align("left")
 		textbox.edit:AnchorTo(textbox.label, "right", "right")
 		textbox.edit:Resize(50)
 
-		textbox = GUI("textbox", "Then alive dps with health % below:", "dpsTargetPct")
+		textbox = GUI("textbox", "Rank crossover (urgency points per rank step):", "rankCrossover")
 		textbox.label:Font("font_default_text_small")
 		textbox.label:Align("left")
 		textbox.edit:AnchorTo(textbox.label, "right", "right")
 		textbox.edit:Resize(50)
 
-		textbox = GUI("textbox", "Then alive tanks with health % below:", "tankTargetPct")
-		textbox.label:Font("font_default_text_small")
-		textbox.label:Align("left")
-		textbox.edit:AnchorTo(textbox.label, "right", "right")
-		textbox.edit:Resize(50)
-
-		textbox = GUI("textbox", "Otherwise dead players or with health % below:", "playerTargetPct")
-		textbox.label:Font("font_default_text_small")
-		textbox.label:Align("left")
-		textbox.edit:AnchorTo(textbox.label, "right", "right")
-		textbox.edit:Resize(50)
+		addPriorityRankCombo("Self priority rank (lower = higher):", "prioSelf")
+		addPriorityRankCombo("Healer priority rank:", "prioHealer")
+		addPriorityRankCombo("Ranged DPS priority rank:", "prioRangedDps")
+		addPriorityRankCombo("Melee DPS priority rank:", "prioMeleeDps")
+		addPriorityRankCombo("Tank priority rank:", "prioTank")
 	end
 	GUI:Show()
 end

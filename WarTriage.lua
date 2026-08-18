@@ -6,7 +6,15 @@
 -- Local variables 
 ----------------------------------------------------------------
 
-local VERSION = 2.02
+local VERSION = 3.00
+local MIN_RANK_CROSSOVER = 5
+local MAX_RANK_CROSSOVER = 30
+local DEFAULT_RANK_CROSSOVER = 15
+local DEFAULT_REZ_SAFETY_THRESHOLD = 90
+local REZ_SAFETY_RANK_SCALE = 10
+local REZ_SAFETY_DAMAGE_SCALE = 2
+local REZ_SAFETY_MAX_URGENCY = 10
+local REZ_SAFETY_URGENCY_RANK_FACTOR = 0.05
 local WARTRIAGE_MACRO_NAME = "WarTriage"
 local WARTRIAGE_MACRO_TEXT = ""
 local WARTRIAGE_MACRO_ICON = 20087
@@ -37,7 +45,8 @@ local WARTRIAGE_CHAT_PREFIX_COLOR = { 0, 255, 255 }
 local WARTRIAGE_DISABLED_TINT = { 125, 125, 125 }
 local WARTRIAGE_ENABLED_TINT = { 255, 255, 255 }
 local HEALER = L"HEALER"
-local DPS = L"DPS"
+local RANGED_DPS = L"RANGED_DPS"
+local MELEE_DPS = L"MELEE_DPS"
 local TANK = L"TANK"
 
 -- Localized functions
@@ -75,18 +84,18 @@ local ArcheType = {
 	[GameData.CareerLine.RUNE_PRIEST] 		= HEALER,
 	[GameData.CareerLine.WARRIOR_PRIEST] 	= HEALER,
 	[GameData.CareerLine.DISCIPLE] 			= HEALER,
-	[GameData.CareerLine.ENGINEER] 			= DPS,
-	[GameData.CareerLine.SLAYER] 			= DPS,
-	[GameData.CareerLine.MARAUDER] 			= DPS,
-	[GameData.CareerLine.SHADOW_WARRIOR] 	= DPS,
-	[GameData.CareerLine.CHOPPA] 			= DPS,
-	[GameData.CareerLine.SQUIG_HERDER] 		= DPS,
-	[GameData.CareerLine.WHITE_LION] 		= DPS,
-	[GameData.CareerLine.WITCH_ELF] 		= DPS,
-	[GameData.CareerLine.SORCERER] 			= DPS,
-	[GameData.CareerLine.WITCH_HUNTER] 		= DPS,
-	[GameData.CareerLine.MAGUS] 			= DPS,
-	[GameData.CareerLine.BRIGHT_WIZARD] 	= DPS,
+	[GameData.CareerLine.ENGINEER] 			= RANGED_DPS,
+	[GameData.CareerLine.SQUIG_HERDER] 		= RANGED_DPS,
+	[GameData.CareerLine.BRIGHT_WIZARD] 	= RANGED_DPS,
+	[GameData.CareerLine.MAGUS] 			= RANGED_DPS,
+	[GameData.CareerLine.SORCERER] 			= RANGED_DPS,
+	[GameData.CareerLine.SHADOW_WARRIOR] 	= RANGED_DPS,
+	[GameData.CareerLine.SLAYER] 			= MELEE_DPS,
+	[GameData.CareerLine.MARAUDER] 			= MELEE_DPS,
+	[GameData.CareerLine.CHOPPA] 			= MELEE_DPS,
+	[GameData.CareerLine.WHITE_LION] 		= MELEE_DPS,
+	[GameData.CareerLine.WITCH_ELF] 		= MELEE_DPS,
+	[GameData.CareerLine.WITCH_HUNTER] 		= MELEE_DPS,
 	[GameData.CareerLine.IRON_BREAKER] 		= TANK,
 	[GameData.CareerLine.KNIGHT] 			= TANK,
 	[GameData.CareerLine.SWORDMASTER] 		= TANK,
@@ -177,10 +186,51 @@ local TERROR_EFFECT_IDS = {
 	[27008] = true,
 }
 
-local function deadRezPriority(archetype)
-	if archetype == HEALER then return 3
-	elseif archetype == TANK then return 2
-	else return 1 end
+local function normalizePriorityRank(rank)
+	rank = tonumber(rank) or 5
+	if rank < 1 then return 1 end
+	if rank > 5 then return 5 end
+	return mathFloor(rank)
+end
+
+local function getPlayerPriorityRank(player)
+	if not player or not WarTriage.Settings then
+		return 5
+	end
+
+	local settings = WarTriage.Settings
+	if player.name == WarTriage.Player.name then
+		return normalizePriorityRank(settings.prioSelf)
+	end
+
+	if player.archeType == HEALER then
+		return normalizePriorityRank(settings.prioHealer)
+	elseif player.archeType == RANGED_DPS then
+		return normalizePriorityRank(settings.prioRangedDps)
+	elseif player.archeType == MELEE_DPS then
+		return normalizePriorityRank(settings.prioMeleeDps)
+	elseif player.archeType == TANK then
+		return normalizePriorityRank(settings.prioTank)
+	end
+
+	return 5
+end
+
+local function getSelectionRouteName(player)
+	if not player then return "unknown" end
+	if player.name == WarTriage.Player.name then
+		return "self"
+	end
+	if player.archeType == HEALER then
+		return "healer"
+	elseif player.archeType == RANGED_DPS then
+		return "ranged-dps"
+	elseif player.archeType == MELEE_DPS then
+		return "melee-dps"
+	elseif player.archeType == TANK then
+		return "tank"
+	end
+	return "unknown"
 end
 
 local function getBuffRemainingSeconds(buff, fallbackSeconds)
@@ -507,13 +557,6 @@ local function getWarTriageMacroTooltipStatus()
 	return L"No Target"
 end
 
-local function getWarTriageMacroTooltipSpecLine()
-	if WarTriage.MacroButtonState and WarTriage.MacroButtonState.playerName ~= L"" then
-		return L"Queued: " .. WarTriage.MacroButtonState.playerName
-	end
-	return L"Healing Assist Macro"
-end
-
 local function getWarTriageMacroTooltipDescription()
 	if not WarTriage.Settings or not WarTriage.Settings.enabled then
 		return L"Addon disabled. The macro is inactive and the button is gray because clicking it would do nothing."
@@ -527,23 +570,187 @@ local function getWarTriageMacroTooltipDescription()
 	return L"No valid player target is currently queued on the macro. The button is gray until WarTriage finds one."
 end
 
-local function getWarTriageMacroTooltipActionText()
-	return formatCheckboxIcon(WarTriage.Settings.manualOverride)
-		.. L" Manual Lock (" .. towstring(tonumber(WarTriage.Settings.manualOverrideDuration) or 0) .. L"s)"
+local function getWarTriageMacroTooltipQueuedLine()
+	local macroName = WarTriage.MacroButtonState and WarTriage.MacroButtonState.playerName
+	if macroName == nil or macroName == L"" then
+		return L"Healing assist macro"
+	end
+
+	for _, player in ipairs(WarTriage.Players or {}) do
+		if player.name == macroName then
+			if player.health == 0 then
+				return L"Queued rez: " .. macroName
+			end
+			return L"Queued heal: " .. macroName .. L" @ " .. towstring(clampHealthPercent(player.health)) .. L"%"
+		end
+	end
+
+	return L"Queued: " .. macroName
+end
+
+local function getWarTriageMacroTooltipPrioritySummary()
+	return towstring("Hurt < "
+		.. tostring(tonumber(WarTriage.Settings.hurtThreshold) or 100)
+		.. "%, rez safety "
+		.. tostring(tonumber(WarTriage.Settings.rezSafetyThreshold) or DEFAULT_REZ_SAFETY_THRESHOLD)
+		.. "%, crossover "
+		.. tostring(tonumber(WarTriage.Settings.rankCrossover) or DEFAULT_RANK_CROSSOVER))
+end
+
+local function getWarTriageMacroTooltipRankSummary()
+	return towstring("Ranks S/H/R/M/T "
+		.. tostring(normalizePriorityRank(WarTriage.Settings.prioSelf)) .. "/"
+		.. tostring(normalizePriorityRank(WarTriage.Settings.prioHealer)) .. "/"
+		.. tostring(normalizePriorityRank(WarTriage.Settings.prioRangedDps)) .. "/"
+		.. tostring(normalizePriorityRank(WarTriage.Settings.prioMeleeDps)) .. "/"
+		.. tostring(normalizePriorityRank(WarTriage.Settings.prioTank)))
+end
+
+local function getWarTriageMacroTooltipSettingsLineOne()
+	return formatCheckboxIcon(WarTriage.Settings.enabled) .. L" Enabled"
+		.. L"   "
+		.. formatCheckboxIcon(WarTriage.Settings.losCheck) .. L" LOS Check"
+		.. L"   "
+		.. formatCheckboxIcon(WarTriage.Settings.rangeCheck) .. L" Range Check"
 		.. L"\n"
-		.. formatCheckboxIcon(WarTriage.Settings.glowEffects)
-		.. L" Glow Effects"
+		.. formatCheckboxIcon(WarTriage.Settings.ownPartyOnly) .. L" Own Party Only"
+		.. L"   "
+		.. formatCheckboxIcon(WarTriage.Settings.ignoreDead) .. L" Ignore Dead"
+		.. L"   "
+		.. formatCheckboxIcon(WarTriage.Settings.ignoreIgnoredPlayers) .. L" Skip Ignored Players"
+end
+
+local function getWarTriageMacroTooltipSettingsLineTwo()
+	return formatCheckboxIcon(WarTriage.Settings.favorFriends) .. L" Favor Friends (25% HP Bias)"
+		.. L"   "
+		.. formatCheckboxIcon(WarTriage.Settings.glowEffects) .. L" Glow Effects"
 		.. L"\n"
-		.. formatCheckboxIcon(WarTriage.Settings.ignoreIgnoredPlayers)
-		.. L" Skip Ignored Players"
-		.. L"\n"
-		.. formatCheckboxIcon(WarTriage.Settings.favorFriends)
-		.. L" Favor Friends (25% HP Bias)"
-		.. L"\n\nCtrl+click macro button: enable / disable WarTriage."
+		.. formatCheckboxIcon(WarTriage.Settings.autoTargetOwnParty) .. L" Auto-Target Self / Own Party"
+		.. L"   "
+		.. formatCheckboxIcon(WarTriage.Settings.manualOverride)
+		.. L" Manual Target Lock (" .. towstring(tonumber(WarTriage.Settings.manualOverrideDuration) or 0) .. L"s)"
+end
+
+local function getWarTriageMacroTooltipFooter()
+	return L"Ctrl+click macro button: enable / disable WarTriage."
 		.. L"\nUse /wt to change settings."
 end
 
-local function createWarTriageMacroTooltip(mouseoverWindow, anchor)
+local function getWarTriageMacroTooltipFallbackActionText()
+	return formatCheckboxIcon(WarTriage.Settings.ignoreIgnoredPlayers) .. L" Skip Ignored Players"
+		.. L"   "
+		.. formatCheckboxIcon(WarTriage.Settings.favorFriends) .. L" Favor Friends"
+		.. L"\n"
+		.. formatCheckboxIcon(WarTriage.Settings.glowEffects) .. L" Glow Effects"
+		.. L"   "
+		.. formatCheckboxIcon(WarTriage.Settings.autoTargetOwnParty) .. L" Auto-Target Party"
+		.. L"\n"
+		.. formatCheckboxIcon(WarTriage.Settings.manualOverride)
+		.. L" Manual Lock (" .. towstring(tonumber(WarTriage.Settings.manualOverrideDuration) or 0) .. L"s)"
+		.. L"\n"
+		.. getWarTriageMacroTooltipFooter()
+end
+
+local function setDefaultTooltipRowColor(row, column, colorDef)
+	if not colorDef or type(Tooltips.SetTooltipColorDef) ~= "function" then
+		return
+	end
+	Tooltips.SetTooltipColorDef(row, column, colorDef)
+end
+
+local function clearDefaultTooltipRows()
+	if not Tooltips or type(Tooltips.SetTooltipText) ~= "function" then
+		return
+	end
+
+	local numRows = Tooltips.NUM_ROWS or 17
+	local numColumns = Tooltips.NUM_COLUMNS or 3
+	for rowIndex = 1, numRows do
+		for columnIndex = 1, numColumns do
+			Tooltips.SetTooltipText(rowIndex, columnIndex, L"")
+		end
+	end
+
+	if type(Tooltips.SetTooltipActionText) == "function" then
+		Tooltips.SetTooltipActionText(L"")
+	end
+end
+
+local function setDefaultTooltipFooter()
+	if type(Tooltips.SetTooltipActionText) ~= "function" then
+		return
+	end
+
+	Tooltips.SetTooltipActionText(getWarTriageMacroTooltipFooter())
+
+	local extraColor = Tooltips.COLOR_EXTRA_TEXT_DEFAULT or { r = 175, g = 175, b = 175 }
+	if DoesWindowExist("DefaultTooltipActionText") then
+		LabelSetTextColor("DefaultTooltipActionText", extraColor.r, extraColor.g, extraColor.b)
+	end
+end
+
+local TOOLTIP_MIN_WIDTH = 390
+local TOOLTIP_BOTTOM_PADDING = 16
+
+local function finalizeDefaultTooltipWithPadding()
+	Tooltips.Finalize()
+
+	if not DoesWindowExist("DefaultTooltip") then
+		return
+	end
+
+	local width, height = WindowGetDimensions("DefaultTooltip")
+	WindowSetDimensions("DefaultTooltip", math.max(width, TOOLTIP_MIN_WIDTH), height + TOOLTIP_BOTTOM_PADDING)
+end
+
+local function createWarTriageRichMacroTooltip(mouseoverWindow, anchor)
+	if not Tooltips
+		or type(Tooltips.CreateTextOnlyTooltip) ~= "function"
+		or type(Tooltips.SetTooltipText) ~= "function"
+		or type(Tooltips.Finalize) ~= "function"
+		or type(Tooltips.AnchorTooltip) ~= "function"
+	then
+		return false
+	end
+
+	local headingColor = Tooltips.COLOR_HEADING or { r = 255, g = 204, b = 102 }
+	local bodyColor = Tooltips.COLOR_BODY or { r = 255, g = 255, b = 255 }
+
+	Tooltips.CreateTextOnlyTooltip(mouseoverWindow, nil)
+	clearDefaultTooltipRows()
+
+	Tooltips.SetTooltipText(1, Tooltips.COLUMN_LEFT or 1, L"WarTriage")
+	setDefaultTooltipRowColor(1, Tooltips.COLUMN_LEFT or 1, headingColor)
+	Tooltips.SetTooltipText(1, Tooltips.COLUMN_RIGHT_RIGHT_ALIGN or 2, getWarTriageMacroTooltipStatus())
+	setDefaultTooltipRowColor(1, Tooltips.COLUMN_RIGHT_RIGHT_ALIGN or 2, headingColor)
+
+	Tooltips.SetTooltipText(2, Tooltips.COLUMN_LEFT or 1, getWarTriageMacroTooltipQueuedLine())
+	setDefaultTooltipRowColor(2, Tooltips.COLUMN_LEFT or 1, bodyColor)
+	Tooltips.SetTooltipText(2, Tooltips.COLUMN_RIGHT_RIGHT_ALIGN or 2, towstring("v" .. formatVersion(WarTriage.Settings.version)))
+	setDefaultTooltipRowColor(2, Tooltips.COLUMN_RIGHT_RIGHT_ALIGN or 2, bodyColor)
+
+	Tooltips.SetTooltipText(3, Tooltips.COLUMN_LEFT or 1, getWarTriageMacroTooltipDescription())
+	setDefaultTooltipRowColor(3, Tooltips.COLUMN_LEFT or 1, headingColor)
+
+	Tooltips.SetTooltipText(4, Tooltips.COLUMN_LEFT or 1, getWarTriageMacroTooltipPrioritySummary())
+	setDefaultTooltipRowColor(4, Tooltips.COLUMN_LEFT or 1, bodyColor)
+
+	Tooltips.SetTooltipText(5, Tooltips.COLUMN_LEFT or 1, getWarTriageMacroTooltipRankSummary())
+	setDefaultTooltipRowColor(5, Tooltips.COLUMN_LEFT or 1, bodyColor)
+
+	Tooltips.SetTooltipText(6, Tooltips.COLUMN_LEFT or 1, getWarTriageMacroTooltipSettingsLineOne())
+	setDefaultTooltipRowColor(6, Tooltips.COLUMN_LEFT or 1, bodyColor)
+
+	Tooltips.SetTooltipText(7, Tooltips.COLUMN_LEFT or 1, getWarTriageMacroTooltipSettingsLineTwo())
+	setDefaultTooltipRowColor(7, Tooltips.COLUMN_LEFT or 1, bodyColor)
+
+	setDefaultTooltipFooter()
+	finalizeDefaultTooltipWithPadding()
+	Tooltips.AnchorTooltip(anchor)
+	return true
+end
+
+local function createWarTriageFallbackAbilityMacroTooltip(mouseoverWindow, anchor)
 	if not Tooltips
 		or type(Tooltips.CreateCustomTooltip) ~= "function"
 		or type(Tooltips.AnchorTooltip) ~= "function"
@@ -554,28 +761,33 @@ local function createWarTriageMacroTooltip(mouseoverWindow, anchor)
 
 	local windowName = "AbilityTooltip"
 	setTooltipLabelText(windowName, "Name", L"WarTriage")
-	setTooltipLabelText(windowName, "SpecLine", getWarTriageMacroTooltipSpecLine())
+	setTooltipLabelText(windowName, "SpecLine", getWarTriageMacroTooltipQueuedLine())
 	setTooltipLabelText(windowName, "Type", getWarTriageMacroTooltipStatus())
-	setTooltipLabelText(windowName, "Cost", towstring("Self: " .. tostring(tonumber(WarTriage.Settings.selfTargetPct) or 0) .. "%"))
-	setTooltipLabelText(windowName, "CastTime", towstring("Healer: " .. tostring(tonumber(WarTriage.Settings.healerTargetPct) or 0) .. "%"))
-	setTooltipLabelText(windowName, "Level", towstring("DPS: " .. tostring(tonumber(WarTriage.Settings.dpsTargetPct) or 0) .. "%"))
-	setTooltipLabelText(windowName, "Range", towstring("Tank: " .. tostring(tonumber(WarTriage.Settings.tankTargetPct) or 0) .. "%"))
-	setTooltipLabelText(windowName, "Cooldown", towstring("Fallback: " .. tostring(tonumber(WarTriage.Settings.playerTargetPct) or 0) .. "%"))
+	setTooltipLabelText(windowName, "Cost", L"")
+	setTooltipLabelText(windowName, "CastTime", L"")
+	setTooltipLabelText(windowName, "Level", L"")
+	setTooltipLabelText(windowName, "Range", L"")
+	setTooltipLabelText(windowName, "Cooldown", L"")
 	setTooltipLabelText(windowName, "Desc", getWarTriageMacroTooltipDescription())
 
 	clearWarTriageAbilityTooltipRequirements(windowName)
-	setTooltipLabelText(windowName, "Requirements1", formatCheckboxIcon(WarTriage.Settings.losCheck) .. L" LOS Check")
-	setTooltipLabelText(windowName, "Requirements2", formatCheckboxIcon(WarTriage.Settings.rangeCheck) .. L" Range Check")
-	setTooltipLabelText(windowName, "Requirements3", formatCheckboxIcon(WarTriage.Settings.ownPartyOnly) .. L" Own Party Only")
-	setTooltipLabelText(windowName, "Requirements4", formatCheckboxIcon(WarTriage.Settings.ignoreDead) .. L" Ignore Dead")
-	setTooltipLabelText(windowName, "Requirements5", formatCheckboxIcon(WarTriage.Settings.autoTargetOwnParty) .. L" Auto-Target Own Party")
-	Tooltips.SetExtraText(windowName, "ActionText", "ActionTextLine", getWarTriageMacroTooltipActionText(), nil)
+	setTooltipLabelText(windowName, "Requirements1", formatCheckboxIcon(WarTriage.Settings.enabled) .. L" Enabled")
+	setTooltipLabelText(windowName, "Requirements2", formatCheckboxIcon(WarTriage.Settings.losCheck) .. L" LOS Check")
+	setTooltipLabelText(windowName, "Requirements3", formatCheckboxIcon(WarTriage.Settings.rangeCheck) .. L" Range Check")
+	setTooltipLabelText(windowName, "Requirements4", formatCheckboxIcon(WarTriage.Settings.ownPartyOnly) .. L" Own Party Only")
+	setTooltipLabelText(windowName, "Requirements5", formatCheckboxIcon(WarTriage.Settings.ignoreDead) .. L" Ignore Dead")
+	Tooltips.SetExtraText(windowName, "ActionText", "ActionTextLine", getWarTriageMacroTooltipFallbackActionText(), nil)
 
-	local _, descHeight = WindowGetDimensions(windowName .. "Desc")
-	WindowSetDimensions(windowName .. "Desc", 350, descHeight)
 	Tooltips.CreateCustomTooltip(mouseoverWindow, windowName)
 	Tooltips.AnchorTooltip(anchor, false, true)
 	return true
+end
+
+local function createWarTriageMacroTooltip(mouseoverWindow, anchor)
+	if createWarTriageRichMacroTooltip(mouseoverWindow, anchor) then
+		return true
+	end
+	return createWarTriageFallbackAbilityMacroTooltip(mouseoverWindow, anchor)
 end
 
 local function installMacroTooltipHook()
@@ -735,12 +947,43 @@ local function mergeSettings(defaults, current)
 	return merged
 end
 
+local function migrateSettings(settings)
+	settings = type(settings) == "table" and settings or {}
+	local oldVersion = tonumber(settings.version) or 0
+
+	if settings.prioSelf == nil or oldVersion < 3.0 then
+		settings.hurtThreshold = settings.hurtThreshold or settings.playerTargetPct or 100
+		settings.rankCrossover = settings.rankCrossover or DEFAULT_RANK_CROSSOVER
+		settings.prioSelf = settings.prioSelf or 1
+		settings.prioHealer = settings.prioHealer or 2
+		settings.prioRangedDps = settings.prioRangedDps or 3
+		settings.prioMeleeDps = settings.prioMeleeDps or 4
+		settings.prioTank = settings.prioTank or 5
+	end
+
+	if settings.rezSafetyThreshold == nil then
+		settings.rezSafetyThreshold = DEFAULT_REZ_SAFETY_THRESHOLD
+	end
+
+	return settings
+end
+
 local function normalizeSettings(settings)
-	settings.selfTargetPct = clampHealthPercent(settings.selfTargetPct)
-	settings.healerTargetPct = clampHealthPercent(settings.healerTargetPct)
-	settings.dpsTargetPct = clampHealthPercent(settings.dpsTargetPct)
-	settings.tankTargetPct = clampHealthPercent(settings.tankTargetPct)
-	settings.playerTargetPct = clampHealthPercent(settings.playerTargetPct)
+	settings.hurtThreshold = clampHealthPercent(settings.hurtThreshold or 100)
+	settings.rezSafetyThreshold = clampHealthPercent(settings.rezSafetyThreshold or DEFAULT_REZ_SAFETY_THRESHOLD)
+
+	settings.rankCrossover = tonumber(settings.rankCrossover) or DEFAULT_RANK_CROSSOVER
+	if settings.rankCrossover < MIN_RANK_CROSSOVER then
+		settings.rankCrossover = MIN_RANK_CROSSOVER
+	elseif settings.rankCrossover > MAX_RANK_CROSSOVER then
+		settings.rankCrossover = MAX_RANK_CROSSOVER
+	end
+
+	settings.prioSelf = normalizePriorityRank(settings.prioSelf)
+	settings.prioHealer = normalizePriorityRank(settings.prioHealer)
+	settings.prioRangedDps = normalizePriorityRank(settings.prioRangedDps)
+	settings.prioMeleeDps = normalizePriorityRank(settings.prioMeleeDps)
+	settings.prioTank = normalizePriorityRank(settings.prioTank)
 
 	settings.manualOverrideDuration = tonumber(settings.manualOverrideDuration) or 4
 	if settings.manualOverrideDuration < 0 then
@@ -753,7 +996,7 @@ local function normalizeSettings(settings)
 end
 
 local function initializeSettings(currentSettings)
-	local settings = mergeSettings(WarTriage.DefaultSettings, currentSettings)
+	local settings = mergeSettings(WarTriage.DefaultSettings, migrateSettings(currentSettings))
 	return normalizeSettings(settings)
 end
 
@@ -919,6 +1162,58 @@ local function getPlayerDangerScore(player)
 	return score
 end
 
+local function getPlayerSelectionScore(player, effectiveHealth)
+	if not player then return -1 end
+
+	local score = getPlayerDangerScore(player)
+	if effectiveHealth ~= nil then
+		score = score + (clampHealthPercent(player.health) - clampHealthPercent(effectiveHealth))
+	end
+
+	local rank = getPlayerPriorityRank(player)
+	local crossover = tonumber(WarTriage.Settings.rankCrossover) or DEFAULT_RANK_CROSSOVER
+	return score - (rank - 1) * crossover
+end
+
+-- Higher-priority roles (lower rank number) raise the HP floor that blocks rez selection.
+-- Incoming damage lowers that floor; high-priority roles treat damage as more urgent.
+local function getRezSafetyBlockHealth(player)
+	if not player or not WarTriage.Settings then
+		return DEFAULT_REZ_SAFETY_THRESHOLD
+	end
+
+	local rank = getPlayerPriorityRank(player)
+	local crossover = tonumber(WarTriage.Settings.rankCrossover) or DEFAULT_RANK_CROSSOVER
+	local baseThreshold = clampHealthPercent(WarTriage.Settings.rezSafetyThreshold or DEFAULT_REZ_SAFETY_THRESHOLD)
+	local rankBonus = (5 - rank) * (crossover / REZ_SAFETY_RANK_SCALE)
+
+	local history = WarTriage.PlayerHealthHistory[player.name]
+	local damageRate = history and history.damageRate or 0
+	local urgencyRankScale = 1 + (5 - rank) * REZ_SAFETY_URGENCY_RANK_FACTOR
+	local urgencyPenalty = mathMin(
+		REZ_SAFETY_MAX_URGENCY,
+		damageRate * REZ_SAFETY_DAMAGE_SCALE * urgencyRankScale
+	)
+
+	return clampHealthPercent(baseThreshold + rankBonus - urgencyPenalty)
+end
+
+local function livingPlayerBlocksRez(player, effectiveHealth)
+	if not player or player.health <= 0 then
+		return false
+	end
+
+	effectiveHealth = clampHealthPercent(effectiveHealth or player.health)
+	return effectiveHealth < getRezSafetyBlockHealth(player)
+end
+
+local function isScannableLivingPlayer(player)
+	return player
+		and player.health > 0
+		and player.hasLOS
+		and player.distance < MAX_HEAL_DISTANCE
+end
+
 local function getSelectionHealthWithFriendBias(player, friendsList)
 	local health = clampHealthPercent(player and player.health or 100)
 	if not player or not WarTriage.Settings or not WarTriage.Settings.favorFriends then
@@ -975,7 +1270,10 @@ function WarTriage.Initialize()
 end
 
 function WarTriage.Print(message)
-	EA_ChatWindow.Print(getChatPrefixWString(true) .. toWString(message))
+	EA_ChatWindow.Print(
+		getChatPrefixWString(true) .. toWString(message),
+		SystemData.SystemLogFilters.GENERAL
+	)
 end
 
 function WarTriage.ClearTraceLog()
@@ -1074,11 +1372,14 @@ WarTriage.DefaultSettings = {
 		enabled = true,
 		ignoreDead = false,
 		glowEffects = true,
-		selfTargetPct = 75,
-		healerTargetPct = 75,
-		dpsTargetPct = 50,
-		tankTargetPct = 25,
-		playerTargetPct = 100,
+		hurtThreshold = 100,
+		rezSafetyThreshold = DEFAULT_REZ_SAFETY_THRESHOLD,
+		rankCrossover = DEFAULT_RANK_CROSSOVER,
+		prioSelf = 1,
+		prioHealer = 2,
+		prioRangedDps = 3,
+		prioMeleeDps = 4,
+		prioTank = 5,
 		isHealer = false,
 		macroCreated = false,
 		losCheck = true,
@@ -1403,6 +1704,16 @@ function WarTriage.PrintSettings()
 	else
 		WarTriage.Print(L"--- <icon58> Auto-Target Self / Own Party")
 	end
+
+	WarTriage.Print("--- Hurt threshold: " .. tostring(WarTriage.Settings.hurtThreshold) .. "%")
+	WarTriage.Print("--- Rez safety threshold: " .. tostring(WarTriage.Settings.rezSafetyThreshold) .. "%")
+	WarTriage.Print("--- Rank crossover: " .. tostring(WarTriage.Settings.rankCrossover))
+	WarTriage.Print("--- Priority ranks (1 = heal first when similarly hurt):")
+	WarTriage.Print("------ Self: " .. tostring(WarTriage.Settings.prioSelf))
+	WarTriage.Print("------ Healer: " .. tostring(WarTriage.Settings.prioHealer))
+	WarTriage.Print("------ Ranged DPS: " .. tostring(WarTriage.Settings.prioRangedDps))
+	WarTriage.Print("------ Melee DPS: " .. tostring(WarTriage.Settings.prioMeleeDps))
+	WarTriage.Print("------ Tank: " .. tostring(WarTriage.Settings.prioTank))
 
 end
 
@@ -1826,18 +2137,12 @@ function WarTriage.SetPlayersLOS(players)
 	return players
 end
 
-local function isBetterHealthCandidate(candidate, current, candidateEffectiveHealth, currentEffectiveHealth)
+local function isBetterSelectionCandidate(candidate, current, candidateEffectiveHealth, currentEffectiveHealth)
 	if not candidate then return false end
 	if not current then return true end
 
-	local candidateScore = getPlayerDangerScore(candidate)
-	local currentScore = getPlayerDangerScore(current)
-	if candidateEffectiveHealth ~= nil then
-		candidateScore = candidateScore + (clampHealthPercent(candidate.health) - clampHealthPercent(candidateEffectiveHealth))
-	end
-	if currentEffectiveHealth ~= nil then
-		currentScore = currentScore + (clampHealthPercent(current.health) - clampHealthPercent(currentEffectiveHealth))
-	end
+	local candidateScore = getPlayerSelectionScore(candidate, candidateEffectiveHealth)
+	local currentScore = getPlayerSelectionScore(current, currentEffectiveHealth)
 	if candidateScore > currentScore then
 		return true
 	elseif candidateScore == currentScore and candidate.health < current.health then
@@ -1848,28 +2153,14 @@ local function isBetterHealthCandidate(candidate, current, candidateEffectiveHea
 	return false
 end
 
-local function isBetterDeadCandidate(candidate, current)
-	if not candidate then return false end
-	if not current then return true end
-
-	local candidatePriority = deadRezPriority(candidate.archeType)
-	local currentPriority = deadRezPriority(current.archeType)
-	if candidatePriority > currentPriority then
-		return true
-	elseif candidatePriority == currentPriority and candidate.distance < current.distance then
-		return true
-	end
-	return false
-end
-
-local function isValidPriorityTarget(player, archeType, threshold, effectiveHealth)
+local function isValidLivingTarget(player, effectiveHealth)
 	effectiveHealth = clampHealthPercent(effectiveHealth or player.health)
-	return player.archeType == archeType
-		and player.name ~= WarTriage.Player.name
-		and player.hasLOS
+	local hurtThreshold = clampHealthPercent(WarTriage.Settings.hurtThreshold or 100)
+
+	return player.hasLOS
 		and player.distance < MAX_HEAL_DISTANCE
 		and effectiveHealth > 0
-		and effectiveHealth < threshold
+		and effectiveHealth < hurtThreshold
 end
 
 local function isValidDeadTarget(player, terrorActive, resOnCooldown)
@@ -1888,18 +2179,6 @@ local function isValidDeadTarget(player, terrorActive, resOnCooldown)
 	return true
 end
 
-local function isValidFallbackTarget(player, effectiveHealth)
-	effectiveHealth = clampHealthPercent(effectiveHealth or player.health)
-	if player.name == WarTriage.Player.name then
-		return false
-	end
-
-	return player.hasLOS
-		and player.distance < MAX_HEAL_DISTANCE
-		and effectiveHealth > 0
-		and effectiveHealth < WarTriage.Settings.playerTargetPct
-end
-
 -- Main function to select which player will be targeted when clicking the macro
 function WarTriage.GetHurtPlayer()
 	local players = WarTriage.Players
@@ -1910,15 +2189,11 @@ function WarTriage.GetHurtPlayer()
 		inMyParty = false
 	}
 
-	local bestHealer = nil
-	local bestHealerHealth = nil
-	local bestDPS = nil
-	local bestDPSHealth = nil
-	local bestTank = nil
-	local bestTankHealth = nil
+	local bestLiving = nil
+	local bestLivingHealth = nil
 	local bestDead = nil
-	local bestOther = nil
-	local bestOtherHealth = nil
+	local bestDeadHealth = nil
+	local rezSafetyBlocked = false
 	local ignoreList = nil
 	local friendsList = nil
 	if WarTriage.Settings.ignoreIgnoredPlayers then
@@ -1942,76 +2217,35 @@ function WarTriage.GetHurtPlayer()
 		if not (WarTriage.Settings.ownPartyOnly and not player.inMyParty) then
 			if player.name ~= WarTriage.Player.name and isNameOnSocialList(player.name, ignoreList) then
 				-- Explicitly skipped by user preference to avoid auto-selecting ignored players.
-			elseif player.name == WarTriage.Player.name and effectiveHealth < WarTriage.Settings.selfTargetPct then
-				traceSelectionDecision("self-threshold", player)
-				return player
-			elseif isValidPriorityTarget(player, HEALER, WarTriage.Settings.healerTargetPct, effectiveHealth) then
-				if isBetterHealthCandidate(player, bestHealer, effectiveHealth, bestHealerHealth) then
-					bestHealer = player
-					bestHealerHealth = effectiveHealth
-				end
-			elseif isValidPriorityTarget(player, DPS, WarTriage.Settings.dpsTargetPct, effectiveHealth) then
-				if isBetterHealthCandidate(player, bestDPS, effectiveHealth, bestDPSHealth) then
-					bestDPS = player
-					bestDPSHealth = effectiveHealth
-				end
-			elseif isValidPriorityTarget(player, TANK, WarTriage.Settings.tankTargetPct, effectiveHealth) then
-				if isBetterHealthCandidate(player, bestTank, effectiveHealth, bestTankHealth) then
-					bestTank = player
-					bestTankHealth = effectiveHealth
-				end
 			elseif isValidDeadTarget(player, terrorActive, resOnCooldown) then
-				if isBetterDeadCandidate(player, bestDead) then
+				if isBetterSelectionCandidate(player, bestDead, 0, bestDeadHealth) then
 					bestDead = player
+					bestDeadHealth = 0
 				end
-			elseif isValidFallbackTarget(player, effectiveHealth) then
-				if isBetterHealthCandidate(player, bestOther, effectiveHealth, bestOtherHealth) then
-					bestOther = player
-					bestOtherHealth = effectiveHealth
+			elseif isValidLivingTarget(player, effectiveHealth) then
+				if isBetterSelectionCandidate(player, bestLiving, effectiveHealth, bestLivingHealth) then
+					bestLiving = player
+					bestLivingHealth = effectiveHealth
 				end
+			end
+
+			if isScannableLivingPlayer(player) and livingPlayerBlocksRez(player, effectiveHealth) then
+				rezSafetyBlocked = true
 			end
 		end
 	end -- end for i = 1, #players do
 
-	if bestHealer then
-		traceSelectionDecision("healer", bestHealer)
-		return bestHealer
+	if bestLiving then
+		traceSelectionDecision(getSelectionRouteName(bestLiving), bestLiving)
+		return bestLiving
 	end
-	if bestDPS then
-		traceSelectionDecision("dps", bestDPS)
-		return bestDPS
-	end
-	if bestTank then
-		traceSelectionDecision("tank", bestTank)
-		return bestTank
-	end
-	if bestDead then
+	if bestDead and not rezSafetyBlocked then
 		traceSelectionDecision("dead", bestDead)
 		return bestDead
 	end
-	if bestOther and bestOther.name == WarTriage.Player.name and WarTriage.Player.health >= WarTriage.Settings.selfTargetPct then
-		appendTrace(
-			"self-selected-unexpected",
-			L"Self reached fallback selection at "
-			.. towstring(WarTriage.Player.health)
-			.. L"% with self threshold "
-			.. towstring(WarTriage.Settings.selfTargetPct)
-			.. L"%. Candidates: healer="
-			.. formatCandidateTrace(bestHealer)
-			.. L"; dps="
-			.. formatCandidateTrace(bestDPS)
-			.. L"; tank="
-			.. formatCandidateTrace(bestTank)
-			.. L"; dead="
-			.. formatCandidateTrace(bestDead)
-			.. L"; fallback="
-			.. formatCandidateTrace(bestOther)
-			.. getTraceContextSuffix()
-		)
-	end
-	if bestOther then
-		traceSelectionDecision("fallback", bestOther)
-		return bestOther
+	if bestDead and rezSafetyBlocked then
+		traceSelectionDecision("rez-blocked", emptyPlayer)
+		return emptyPlayer
 	end
 
 	traceSelectionDecision("none", emptyPlayer)

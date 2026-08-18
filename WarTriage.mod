@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ModuleFile xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-	<UiMod name="WarTriage" version="2.02" date="2026-07-11" >
+	<UiMod name="WarTriage" version="3.00" date="2026-07-11" >
 		<Author name="Talladego" email="" />
 		<Description text="WarTriage" />
-		<VersionSettings gameVersion="1.4.8" windowsVersion="1.0" savedVariablesVersion="1.0" />
+		<VersionSettings gameVersion="1.4.8" windowsVersion="1.0" savedVariablesVersion="2.0" />
 
 		<Dependencies>
 			<Dependency name="EA_ActionBars" />
