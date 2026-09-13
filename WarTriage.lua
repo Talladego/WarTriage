@@ -6,7 +6,7 @@
 -- Local variables 
 ----------------------------------------------------------------
 
-local VERSION = 3.03
+local VERSION = 3.04
 local MIN_RANK_CROSSOVER = 5
 local MAX_RANK_CROSSOVER = 30
 local DEFAULT_RANK_CROSSOVER = 15
@@ -332,13 +332,14 @@ local function getFriendlyTargetRezState()
 	}
 end
 
--- Minimal cooldown probe using a hidden hotbar slot
-local TEST_BARSLOT = 118
+-- Read ability cooldown without touching hotbar slots (SetHotbarData can GCD / overwrite buttons).
+-- GetAbilityCooldown returns milliseconds (see stock abilitytooltips.lua).
 local function IsActionOnCooldown(actionId)
 	if not actionId or actionId == 0 then return false end
-	SetHotbarData(TEST_BARSLOT, GameData.PlayerActions.DO_ABILITY, actionId)
-	local cd = GetHotbarCooldown(TEST_BARSLOT)
-	return cd and cd > 0.1
+	if not GetAbilityCooldown then return false end
+	local cd = GetAbilityCooldown(actionId)
+	if not cd then return false end
+	return (cd / 1000) > 0.1
 end
 
 local function fixString (str)
@@ -347,6 +348,14 @@ local function fixString (str)
 	local pos = str:find (L"^", 1, true)
 	if (pos) then str = str:sub (1, pos - 1) end
 	return str
+end
+
+local function refreshLocalPlayerName()
+	local name = GameData.Player.name
+	if name ~= nil and name ~= L"" then
+		LOCAL_PLAYER_NAME = name
+	end
+	return fixString(LOCAL_PLAYER_NAME)
 end
 
 local function hasBuff(target, id)
@@ -994,6 +1003,14 @@ local function normalizeSettings(settings)
 	return settings
 end
 
+function WarTriage.NormalizeSettings()
+	if not WarTriage.Settings then
+		return nil
+	end
+	WarTriage.Settings = normalizeSettings(WarTriage.Settings)
+	return WarTriage.Settings
+end
+
 local function initializeSettings(currentSettings)
 	local settings = mergeSettings(WarTriage.DefaultSettings, migrateSettings(currentSettings))
 	return normalizeSettings(settings)
@@ -1245,7 +1262,7 @@ function WarTriage.Initialize()
 	LibSlash.RegisterSlashCmd("wt", function(input) WarTriage_Config.Slash(input) end)
 	
 	WarTriage.CheckCareer()
-	WarTriage.Player.name = fixString(LOCAL_PLAYER_NAME)
+	WarTriage.Player.name = refreshLocalPlayerName()
 	WarTriage.Print("v" .. formatVersion(WarTriage.Settings.version) .. " loaded. /wt opens config. /wt help shows commands.")
 	
 	if WarTriage.Settings.isHealer then
@@ -1758,23 +1775,21 @@ function WarTriage.GetFriendlyTarget()
 		WarTriage.CurrentFriendlyTarget.health = clampHealthPercent(target.healthPercent)
 		WarTriage.CurrentFriendlyTarget.isExplicit = true
 		return WarTriage.CurrentFriendlyTarget.name
-	elseif target and target.entityid == 0 then -- Treat no target as self target
-		WarTriage.CurrentFriendlyTarget.name = fixString(LOCAL_PLAYER_NAME)
-		WarTriage.CurrentFriendlyTarget.health = getLocalPlayerHealthPercent("friendly-target-fallback")
-		WarTriage.CurrentFriendlyTarget.isExplicit = false
-		return fixString(LOCAL_PLAYER_NAME)
-	else
-		WarTriage.CurrentFriendlyTarget.name = L""
-		WarTriage.CurrentFriendlyTarget.health = 0
-		WarTriage.CurrentFriendlyTarget.isExplicit = false
-		return L""
 	end
+
+	-- entityid == 0 means no friendly target. Do not alias that to self — TargetPlayer
+	-- would treat "already on self" and clear the macro instead of arming TARGET_SELF.
+	WarTriage.CurrentFriendlyTarget.name = L""
+	WarTriage.CurrentFriendlyTarget.health = 0
+	WarTriage.CurrentFriendlyTarget.isExplicit = false
+	return L""
 end
 
 -- Event handlers
 function WarTriage.LOADING_END()
 	installMacroTooltipHook()
 	installActionButtonHooks()
+	WarTriage.Player.name = refreshLocalPlayerName()
 	WarTriage.CheckCareer()
 	if WarTriage.Settings.isHealer then
 		WarTriage.RegisterHotbarEventHandler()
@@ -1862,21 +1877,27 @@ function WarTriage.UpdateMacro(macroName, macroText, macroIcon)
 end
 
 local function getOwnPartyTargetEvents()
+	local localName = refreshLocalPlayerName()
 	local ownPartyTargetEvents = {
-		[fixString(LOCAL_PLAYER_NAME)] = SystemData.Events.TARGET_SELF,
+		[localName] = SystemData.Events.TARGET_SELF,
 	}
 
 	if IsWarBandActive and IsWarBandActive() and PartyUtils.IsPlayerInWarband and PartyUtils.GetWarbandParty then
-		local partyIndex = PartyUtils.IsPlayerInWarband(fixString(LOCAL_PLAYER_NAME))
+		local partyIndex = PartyUtils.IsPlayerInWarband(localName)
 		local warbandParty = partyIndex and PartyUtils.GetWarbandParty(partyIndex)
 		local partyPlayers = warbandParty and warbandParty.players or {}
-		for index, member in ipairs(partyPlayers) do
+		-- Warband players[] includes self; TARGET_GROUP_MEMBER_* slots are other members only.
+		local memberSlot = 0
+		for _, member in ipairs(partyPlayers) do
 			local memberName = fixString(member and member.name)
-			if memberName and memberName ~= L"" and PartyTargetEvent[index] then
-				if memberName == fixString(LOCAL_PLAYER_NAME) then
+			if memberName and memberName ~= L"" then
+				if memberName == localName then
 					ownPartyTargetEvents[memberName] = SystemData.Events.TARGET_SELF
 				else
-					ownPartyTargetEvents[memberName] = PartyTargetEvent[index]
+					memberSlot = memberSlot + 1
+					if PartyTargetEvent[memberSlot] then
+						ownPartyTargetEvents[memberName] = PartyTargetEvent[memberSlot]
+					end
 				end
 			end
 		end
@@ -1895,8 +1916,9 @@ end
 
 local function getOwnPartyMembers()
 	local ownPartyTargetEvents = getOwnPartyTargetEvents()
+	local localName = fixString(LOCAL_PLAYER_NAME)
 	local ownPartyMembers = {
-		[fixString(LOCAL_PLAYER_NAME)] = true,
+		[localName] = true,
 	}
 	for memberName in pairs(ownPartyTargetEvents) do
 		if memberName and memberName ~= L"" then
@@ -1972,30 +1994,67 @@ function WarTriage.BuildFriendlyPlayersSnapshot()
 	local ownPartyMembers, ownPartyTargetEvents = getOwnPartyMembers()
 	WarTriage.OwnPartyTargetEvents = ownPartyTargetEvents
 
-	WarTriage.Player.name = fixString(LOCAL_PLAYER_NAME)
+	WarTriage.Player.name = refreshLocalPlayerName()
 	WarTriage.Player.health = getLocalPlayerHealthPercent("snapshot")
 	WarTriage.Player.archeType = ArcheType[GameData.Player.career.line]
 	WarTriage.Player.inMyParty = true
 	WarTriage.Player.targetEvent = ownPartyTargetEvents[WarTriage.Player.name]
 	pushFriendlyPlayer(playersByName, ownPartyMembers, ownPartyTargetEvents, WarTriage.Player.name, WarTriage.Player.health, WarTriage.Player.archeType, "self")
 
-	if (GameData.Player.isInScenario or GameData.Player.isInSiege) and GameData.GetScenarioPlayerGroups then
-		local scenarioPlayers = GameData.GetScenarioPlayerGroups() or {}
-		for _, playerData in ipairs(scenarioPlayers) do
-			pushFriendlyPlayer(
-				playersByName,
-				ownPartyMembers,
-				ownPartyTargetEvents,
-				playerData.name,
-				playerData.health,
-				ArcheType[CareerIDsToLines[playerData.careerId]],
-				"scenario"
-			)
+	local usedScenarioRoster = false
+	if GameData.Player.isInScenario or GameData.Player.isInSiege then
+		-- GetScenarioPlayerGroups returns a flat player list with live .health (ScenarioGroupWindow).
+		-- Skip empty/unusable siege/scenario tables and fall through to warband/party.
+		local scenarioPlayers = GameData.GetScenarioPlayerGroups and GameData.GetScenarioPlayerGroups() or nil
+		local scenarioAdded = 0
+		if scenarioPlayers then
+			local playerRealm = GameData.Player.realm
+			for _, playerData in ipairs(scenarioPlayers) do
+				if playerData and playerData.name and playerData.name ~= L"" then
+					if playerData.realm == nil or playerRealm == nil or playerData.realm == playerRealm then
+						local health = playerData.health
+						if health == nil then
+							health = playerData.healthPercent
+						end
+						if health ~= nil then
+							local careerLine = CareerIDsToLines[playerData.careerId] or playerData.careerLine
+							pushFriendlyPlayer(
+								playersByName,
+								ownPartyMembers,
+								ownPartyTargetEvents,
+								playerData.name,
+								health,
+								ArcheType[careerLine],
+								"scenario"
+							)
+							scenarioAdded = scenarioAdded + 1
+						end
+					end
+				end
+			end
 		end
-	elseif IsWarBandActive and IsWarBandActive() then
-		local warbandData = PartyUtils.GetWarbandData() or {}
-		for _, groupData in ipairs(warbandData) do
-			for _, playerData in ipairs(groupData.players or {}) do
+		usedScenarioRoster = scenarioAdded > 0
+	end
+
+	if not usedScenarioRoster then
+		if IsWarBandActive and IsWarBandActive() then
+			local warbandData = PartyUtils.GetWarbandData() or {}
+			for _, groupData in ipairs(warbandData) do
+				for _, playerData in ipairs(groupData.players or {}) do
+					pushFriendlyPlayer(
+						playersByName,
+						ownPartyMembers,
+						ownPartyTargetEvents,
+						playerData.name,
+						playerData.healthPercent,
+						ArcheType[playerData.careerLine],
+						"warband"
+					)
+				end
+			end
+		else
+			local partyData = PartyUtils.GetPartyData() or {}
+			for _, playerData in ipairs(partyData) do
 				pushFriendlyPlayer(
 					playersByName,
 					ownPartyMembers,
@@ -2003,22 +2062,9 @@ function WarTriage.BuildFriendlyPlayersSnapshot()
 					playerData.name,
 					playerData.healthPercent,
 					ArcheType[playerData.careerLine],
-					"warband"
+					"party"
 				)
 			end
-		end
-	else
-		local partyData = PartyUtils.GetPartyData() or {}
-		for _, playerData in ipairs(partyData) do
-			pushFriendlyPlayer(
-				playersByName,
-				ownPartyMembers,
-				ownPartyTargetEvents,
-				playerData.name,
-				playerData.healthPercent,
-				ArcheType[playerData.careerLine],
-				"party"
-			)
 		end
 	end
 
@@ -2142,6 +2188,7 @@ end
 function WarTriage.SetPlayersLOS(players)
 	local players = players
 	local checkAbilityID = LosCheckAbiliyId[GameData.Player.career.line]
+	local losCheckEnabled = WarTriage.Settings.losCheck and checkAbilityID ~= nil
 
 	local target = WarTriage.PlayerTarget
 	
@@ -2150,7 +2197,7 @@ function WarTriage.SetPlayersLOS(players)
 	end
 	
 	for i = 1, #players do
-		if target == players[i].name and WarTriage.Settings.losCheck then
+		if target == players[i].name and losCheckEnabled then
 			if players[i].health > 0 then
 				players[i].hasLOS = IsTargetValid(checkAbilityID.healID)
 			else
@@ -2235,7 +2282,7 @@ function WarTriage.GetHurtPlayer()
 		friendsList = GetFriendsList()
 	end
     
-	-- Check resurrection cooldown via hidden hotbar slot
+	-- Check resurrection cooldown via GetAbilityCooldown (no hotbar write).
 	local resOnCooldown = false
 	local terrorActive = hasTerrorDebuff(GameData.BuffTargetType.SELF)
 	local checkAbilityID = LosCheckAbiliyId[GameData.Player.career.line]
@@ -2261,7 +2308,8 @@ function WarTriage.GetHurtPlayer()
 				end
 			end
 
-			if isScannableLivingPlayer(player) and livingPlayerBlocksRez(player, effectiveHealth) then
+			-- Rez-safety must use real HP; friend bias is selection-ranking only.
+			if isScannableLivingPlayer(player) and livingPlayerBlocksRez(player, player.health) then
 				rezSafetyBlocked = true
 			end
 		end
@@ -2522,6 +2570,7 @@ function installActionButtonHooks()
 	function ActionButton.OnLButtonDown(self, flags, x, y)
 		if isWarTriageMacroButton(self) and flags == SystemData.ButtonFlags.CONTROL then
 			WarTriage.ToggleEnabled()
+			return
 		end
 		orgActionButtonOnLButtonDown(self, flags, x, y)
 	end

@@ -7,6 +7,28 @@ local CONFIG_WINDOW_WIDTH = 860
 local CONFIG_WINDOW_HEIGHT = 620
 local CONFIG_WINDOW_TITLE = "<icon20087> WarTriage v"
 
+local MIN_RANK_CROSSOVER = 5
+local MAX_RANK_CROSSOVER = 30
+local DEFAULT_RANK_CROSSOVER = 15
+local DEFAULT_REZ_SAFETY_THRESHOLD = 90
+
+-- LibConfig.MinMax errors on nil from tonumber(""); keep last/default instead.
+local function clampConfigNumber(minVal, maxVal, fallback)
+	return function(value)
+		local number = tonumber(value)
+		if number == nil then
+			return fallback
+		end
+		if number < minVal then
+			return minVal
+		end
+		if number > maxVal then
+			return maxVal
+		end
+		return number
+	end
+end
+
 local function trimInput(input)
 	if input == nil then return "" end
 	local normalized = tostring(input)
@@ -187,26 +209,47 @@ function WarTriage_Config.Slash(input)
 		GUI("checkbox", "Auto-Target Self / Own Party", "autoTargetOwnParty")
 		GUI("checkbox", "Manual Target Lock", "manualOverride")
 
-		textbox = GUI("textbox", "Manual lock duration (seconds):", "manualOverrideDuration")
+		local settings = WarTriage.Settings
+		textbox = GUI(
+			"textbox",
+			"Manual lock duration (seconds):",
+			"manualOverrideDuration",
+			clampConfigNumber(0, 600, tonumber(settings.manualOverrideDuration) or 4)
+		)
 		textbox.label:Font("font_default_text_small")
 		textbox.label:Align("left")
 		textbox.edit:AnchorTo(textbox.label, "right", "right")
 		textbox.edit:Resize(50)
 
 		GUI:AddTab("Priorities")
-		textbox = GUI("textbox", "Only target players below this health %:", "hurtThreshold")
+		textbox = GUI(
+			"textbox",
+			"Only target players below this health %:",
+			"hurtThreshold",
+			clampConfigNumber(1, 100, tonumber(settings.hurtThreshold) or 100)
+		)
 		textbox.label:Font("font_default_text_small")
 		textbox.label:Align("left")
 		textbox.edit:AnchorTo(textbox.label, "right", "right")
 		textbox.edit:Resize(50)
 
-		textbox = GUI("textbox", "Rez safety threshold (%):", "rezSafetyThreshold")
+		textbox = GUI(
+			"textbox",
+			"Rez safety threshold (%):",
+			"rezSafetyThreshold",
+			clampConfigNumber(0, 100, tonumber(settings.rezSafetyThreshold) or DEFAULT_REZ_SAFETY_THRESHOLD)
+		)
 		textbox.label:Font("font_default_text_small")
 		textbox.label:Align("left")
 		textbox.edit:AnchorTo(textbox.label, "right", "right")
 		textbox.edit:Resize(50)
 
-		textbox = GUI("textbox", "Rank crossover (urgency points per rank step):", "rankCrossover")
+		textbox = GUI(
+			"textbox",
+			"Rank crossover (urgency points per rank step):",
+			"rankCrossover",
+			clampConfigNumber(MIN_RANK_CROSSOVER, MAX_RANK_CROSSOVER, tonumber(settings.rankCrossover) or DEFAULT_RANK_CROSSOVER)
+		)
 		textbox.label:Font("font_default_text_small")
 		textbox.label:Align("left")
 		textbox.edit:AnchorTo(textbox.label, "right", "right")
@@ -223,6 +266,9 @@ end
 
 function WarTriage_Config.SettingsChanged()
 	GUI:Hide()
+	if WarTriage.NormalizeSettings then
+		WarTriage.NormalizeSettings()
+	end
 	WarTriage.CheckCareer()
 	WarTriage.RegisterEventHandlers(WarTriage.Settings.enabled)
 	if WarTriage.RefreshState then

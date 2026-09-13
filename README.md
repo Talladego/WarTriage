@@ -35,6 +35,8 @@ Only players below **hurt threshold** HP% are considered. Dead players use separ
 
 ## Current release
 
+**3.04** — Correctness pass for issues #3–#11: rez CD via `GetAbilityCooldown` (no hotbar write), scenario/siege roster fallthrough + realm/health guards, empty friendly target no longer aliases self, refresh player name on load, Ctrl+click toggle returns without firing the button, config number clamp + `NormalizeSettings`, friend HP bias selection-only (not rez-safety), warband auto-target slots skip self, `SetPlayersLOS` nil-guards career LOS table.
+
 **3.03** — Fix map-range name keys: use `fixString` (wstring, strip `^realm`) again so distance lookups match roster names. The 3.01 early-out incorrectly used `WStringToString`, which made everyone look OOR and blocked queueing/auto-target when range check was on.
 
 **3.02** — OnUpdate: rez-cache / HP-history table walks run behind the 0.5 s decision gate (manual-override timer and clocks still every frame). Decay uses summed elapsed so hitch frames stay equivalent. Macro icon mute tint follows enabled+healer only (no longer grayed when no queued target).
