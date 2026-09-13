@@ -35,4 +35,10 @@ Only players below **hurt threshold** HP% are considered. Dead players use separ
 
 ## Current release
 
+**3.03** — Fix map-range name keys: use `fixString` (wstring, strip `^realm`) again so distance lookups match roster names. The 3.01 early-out incorrectly used `WStringToString`, which made everyone look OOR and blocked queueing/auto-target when range check was on.
+
+**3.02** — OnUpdate: rez-cache / HP-history table walks run behind the 0.5 s decision gate (manual-override timer and clocks still every frame). Decay uses summed elapsed so hitch frames stay equivalent. Macro icon mute tint follows enabled+healer only (no longer grayed when no queued target).
+
+**3.01** — `SetPlayersDistance` early-outs the overhead-map scan once every roster name has a distance. Skips the map loop entirely when range check is off.
+
 **3.00** — Unified rank-based priority scoring (replaces per-role HP thresholds).

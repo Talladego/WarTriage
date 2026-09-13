@@ -6,7 +6,7 @@
 -- Local variables 
 ----------------------------------------------------------------
 
-local VERSION = 3.00
+local VERSION = 3.03
 local MIN_RANK_CROSSOVER = 5
 local MAX_RANK_CROSSOVER = 30
 local DEFAULT_RANK_CROSSOVER = 15
@@ -60,6 +60,7 @@ local ipairs = ipairs
 local osDate = os and os.date
 
 local timeLeft = TIME_DELAY
+local gatedCleanupElapsed = 0
 local macroWatchdogTimeLeft = 0
 local currentTime = 0
 local loadingEndEventRegistered = false
@@ -567,7 +568,7 @@ local function getWarTriageMacroTooltipDescription()
 	if WarTriage.MacroButtonState and WarTriage.MacroButtonState.playerName ~= L"" then
 		return L"Click the macro to target the queued ally. Glow indicates a usable queued target."
 	end
-	return L"No valid player target is currently queued on the macro. The button is gray until WarTriage finds one."
+	return L"No valid player target is currently queued. The icon stays full color while WarTriage is enabled; glow appears when a target is queued."
 end
 
 local function getWarTriageMacroTooltipQueuedLine()
@@ -866,13 +867,11 @@ local function setMacroButtonVisualDisabled(button, disabled)
 		iconFrame:SetTintColor(tint[1], tint[2], tint[3])
 	end
 
+	-- Glow / action data are owned by RefreshMacroButtonAppearance; only stop glow when muted.
 	if disabled then
 		local glowFrame = getButtonGlowFrame(button)
 		if glowFrame then
 			glowFrame:StopAnimation(true)
-		end
-		if button.m_Name then
-			WindowSetGameActionData(button.m_Name.."Action", 0, 0, L"")
 		end
 	end
 end
@@ -1530,10 +1529,8 @@ function WarTriage.OnUpdate(elapsed)
 		return
 	end
 
+	-- Every frame: clocks/timers only. Table walks wait for TIME_DELAY (see gated block).
 	currentTime = currentTime + elapsed
-	cleanupRezEffectCache()
-	decayPlayerHealthHistory(elapsed)
-	cleanupPlayerHealthHistory()
 	updateManualOverrideTimer(elapsed)
 	macroWatchdogTimeLeft = macroWatchdogTimeLeft - elapsed
 	if macroWatchdogTimeLeft <= 0 then
@@ -1542,11 +1539,19 @@ function WarTriage.OnUpdate(elapsed)
 			ensureMacroAvailable(WARTRIAGE_MACRO_NAME, WARTRIAGE_MACRO_TEXT, WARTRIAGE_MACRO_ICON)
 		end
 	end
-    timeLeft = timeLeft - elapsed
+
+	gatedCleanupElapsed = gatedCleanupElapsed + elapsed
+	timeLeft = timeLeft - elapsed
 	if timeLeft > 0 then
-        return
-    end
-    timeLeft = TIME_DELAY
+		return
+	end
+	timeLeft = TIME_DELAY
+
+	local cleanupElapsed = gatedCleanupElapsed
+	gatedCleanupElapsed = 0
+	cleanupRezEffectCache()
+	decayPlayerHealthHistory(cleanupElapsed)
+	cleanupPlayerHealthHistory()
 
 	if WarTriage.Settings.enabled and WarTriage.Settings.isHealer then
 		if WarTriage.RefreshState.targetDirty or currentTime >= WarTriage.RefreshState.nextTargetRefreshTime then
@@ -2076,33 +2081,60 @@ function WarTriage.GetFriendlyPlayers()
 	return players
 end
 
--- Set the distance so we don't target a player that is out of range
+-- Set the distance so we don't target a player that is out of range.
+-- Early-out once every roster name has a distance. Keys must use fixString
+-- (strip ^realm, keep wstring) — same as player.name — not WStringToString.
 function WarTriage.SetPlayersDistance(players)
 	local defaultDistance = 999999
-	local players = players
 	local playerDistances = {}
-	
-	-- build table of player distances
-	for i = 1, MAX_MAP_POINTS do
-		local mpd = GetMapPointData("EA_Window_OverheadMapMapDisplay", i)
-		if mpd and MapPointTypeFilter[mpd.pointType] and mpd.name then
-			local dist = mpd.distance or defaultDistance
-			playerDistances[fixString(mpd.name)] = mathFloor(dist * DISTANCE_FIX_COEFFICIENT)
-		end
-	end
-	
-	-- look up and set distances
-	for i = 1, #players do
-		if WarTriage.Settings.rangeCheck then
-			players[i].distance = playerDistances[players[i].name] or defaultDistance
-		else
+
+	if not WarTriage.Settings.rangeCheck then
+		for i = 1, #players do
 			players[i].distance = 0
 		end
+		WarTriage.PlayerDistances = playerDistances
+		return players
+	end
+
+	local pending = {}
+	local pendingCount = 0
+	for i = 1, #players do
+		local name = players[i].name
+		if name ~= nil and name ~= L"" and pending[name] == nil then
+			pending[name] = true
+			pendingCount = pendingCount + 1
+		end
+	end
+
+	if pendingCount > 0 then
+		for i = 1, MAX_MAP_POINTS do
+			local mpd = GetMapPointData("EA_Window_OverheadMapMapDisplay", i)
+			if mpd and MapPointTypeFilter[mpd.pointType] and mpd.name then
+				local key = fixString(mpd.name)
+				if key then
+					local dist = mpd.distance or defaultDistance
+					playerDistances[key] = mathFloor(dist * DISTANCE_FIX_COEFFICIENT)
+
+					if pending[key] then
+						pending[key] = nil
+						pendingCount = pendingCount - 1
+						if pendingCount <= 0 then
+							break
+						end
+					end
+				end
+			end
+		end
+	end
+
+	for i = 1, #players do
+		local name = players[i].name
+		players[i].distance = (name and playerDistances[name]) or defaultDistance
 	end
 
 	WarTriage.PlayerDistances = playerDistances
 
-	return players	
+	return players
 end
 
 -- Limited LOS check.
@@ -2410,8 +2442,10 @@ function WarTriage.RefreshMacroButtonAppearance()
 		local hbar, buttonid = ActionBars:BarAndButtonIdFromSlot(macroSlots[i])
 		local macroButton = hbar and hbar.m_Buttons and hbar.m_Buttons[buttonid]
 		if macroButton then
+			-- Overlay = settings.enabled; mute tint = not actually active (disabled or non-healer).
+			-- Do not mute merely because no ally is queued yet — that made healers look "off" most of the time.
 			setMacroButtonEnabledOverlay(macroButton, settingsEnabled)
-			setMacroButtonVisualDisabled(macroButton, not addonActive or not WarTriage.MacroButtonState.hasTarget)
+			setMacroButtonVisualDisabled(macroButton, not addonActive)
 
 			local effectiveGlowLevel = 0
 			if hasTarget and WarTriage.Settings.glowEffects then
@@ -2419,13 +2453,17 @@ function WarTriage.RefreshMacroButtonAppearance()
 			end
 			WarTriage.SetButtonGlow(macroButton, effectiveGlowLevel)
 
-			if hasTarget and macroButton.m_Name then
-				WindowSetGameActionData(
-					macroButton.m_Name .. "Action",
-					GameData.PlayerActions.SET_TARGET,
-					0,
-					towstring(WarTriage.MacroButtonState.playerName)
-				)
+			if macroButton.m_Name then
+				if hasTarget then
+					WindowSetGameActionData(
+						macroButton.m_Name .. "Action",
+						GameData.PlayerActions.SET_TARGET,
+						0,
+						towstring(WarTriage.MacroButtonState.playerName)
+					)
+				else
+					WindowSetGameActionData(macroButton.m_Name .. "Action", 0, 0, L"")
+				end
 			end
 		end
 	end
