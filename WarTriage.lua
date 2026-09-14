@@ -6,7 +6,7 @@
 -- Local variables 
 ----------------------------------------------------------------
 
-local VERSION = 3.04
+local VERSION = 3.05
 local MIN_RANK_CROSSOVER = 5
 local MAX_RANK_CROSSOVER = 30
 local DEFAULT_RANK_CROSSOVER = 15
@@ -69,6 +69,10 @@ local macroTooltipHookInstalled = false
 local actionButtonHooksInstalled = false
 local hotbarEventRegistered = false
 local ensureMacroAvailable
+
+-- Scenario HP overrides from SCENARIO_PLAYER_HITS_UPDATED (CustomUI / ScenarioGroupWindow pattern).
+-- Keyed [groupIndex][groupSlotNum] → hits percent. Snapshot group lists can lag between full refreshes.
+local m_scenarioHitHp = {}
 
 local MapPointTypeFilter = {
 	[SystemData.MapPips.PLAYER] = true,
@@ -332,14 +336,27 @@ local function getFriendlyTargetRezState()
 	}
 end
 
--- Read ability cooldown without touching hotbar slots (SetHotbarData can GCD / overwrite buttons).
--- GetAbilityCooldown returns milliseconds (see stock abilitytooltips.lua).
+-- Remaining CD via GetHotbarCooldown on an existing bar slot (read-only).
+-- GetAbilityCooldown is tooltip duration length, not remaining time — do not use it for readiness.
+-- If the ability is not on any hotbar slot, treat as ready (false); never SetHotbarData probe.
 local function IsActionOnCooldown(actionId)
 	if not actionId or actionId == 0 then return false end
-	if not GetAbilityCooldown then return false end
-	local cd = GetAbilityCooldown(actionId)
-	if not cd then return false end
-	return (cd / 1000) > 0.1
+	if not GetHotbarData or not GetHotbarCooldown then return false end
+	local abilityAction = GameData.PlayerActions and GameData.PlayerActions.DO_ABILITY
+	local maxSlots = GameData.HOTBAR_TOTAL_SLOT_COUNT or 132
+	for slot = 1, maxSlots do
+		local actionType, hotbarActionId = GetHotbarData(slot)
+		if hotbarActionId == actionId
+			and (abilityAction == nil or actionType == nil or actionType == abilityAction)
+		then
+			local remaining = GetHotbarCooldown(slot)
+			if remaining and remaining > 0.1 then
+				return true
+			end
+			return false
+		end
+	end
+	return false
 end
 
 local function fixString (str)
@@ -1020,6 +1037,10 @@ local function isAddonActive()
 	return WarTriage.Settings and WarTriage.Settings.enabled and WarTriage.Settings.isHealer
 end
 
+local function clearScenarioHitHp()
+	m_scenarioHitHp = {}
+end
+
 local function resetRuntimeState()
 	WarTriage.Players = {}
 	WarTriage.PlayerDistances = {}
@@ -1043,6 +1064,7 @@ local function resetRuntimeState()
 	WarTriage.RefreshState.nextPlayersSnapshotTime = 0
 	WarTriage.RefreshState.nextTransientRefreshTime = 0
 	WarTriage.RefreshState.nextTargetRefreshTime = 0
+	clearScenarioHitHp()
 	timeLeft = 0
 	macroWatchdogTimeLeft = 0
 	WarTriage.TraceState.lastDecisionSignature = nil
@@ -1828,10 +1850,19 @@ function WarTriage.GROUP_STATUS_UPDATED()
 end
 
 function WarTriage.SCENARIO_GROUP_UPDATED()
+	clearScenarioHitHp()
 	markPlayersDirty()
 end
 
-function WarTriage.SCENARIO_PLAYER_HITS_UPDATED()
+-- Stock / CustomUI: (groupIndex, groupSlotNum, hits). Merge hits so triage HP stays live between group-list refreshes.
+function WarTriage.SCENARIO_PLAYER_HITS_UPDATED(groupIndex, groupSlotNum, hits)
+	local gi = tonumber(groupIndex)
+	local mi = tonumber(groupSlotNum)
+	if gi ~= nil and mi ~= nil then
+		m_scenarioHitHp[gi] = m_scenarioHitHp[gi] or {}
+		-- hits == 0 means dead; store explicitly (do not use `or`).
+		m_scenarioHitHp[gi][mi] = tonumber(hits)
+	end
 	markPlayersDirty()
 end
 
@@ -2015,6 +2046,19 @@ function WarTriage.BuildFriendlyPlayersSnapshot()
 						local health = playerData.health
 						if health == nil then
 							health = playerData.healthPercent
+						end
+						-- Prefer live SCENARIO_PLAYER_HITS_UPDATED cache when present (hits==0 is dead).
+						local gi = tonumber(playerData.sgroupindex)
+						local mi = tonumber(playerData.sgroupslotnum)
+						if gi ~= nil and mi ~= nil then
+							local hitsForGroup = m_scenarioHitHp[gi]
+							local hit = hitsForGroup and hitsForGroup[mi]
+							if hit ~= nil then
+								local merged = tonumber(hit)
+								if merged ~= nil then
+									health = merged
+								end
+							end
 						end
 						if health ~= nil then
 							local careerLine = CareerIDsToLines[playerData.careerId] or playerData.careerLine
@@ -2282,7 +2326,7 @@ function WarTriage.GetHurtPlayer()
 		friendsList = GetFriendsList()
 	end
     
-	-- Check resurrection cooldown via GetAbilityCooldown (no hotbar write).
+	-- Rez remaining CD via hotbar slot scan + GetHotbarCooldown (no SetHotbarData write).
 	local resOnCooldown = false
 	local terrorActive = hasTerrorDebuff(GameData.BuffTargetType.SELF)
 	local checkAbilityID = LosCheckAbiliyId[GameData.Player.career.line]
