@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ModuleFile xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-	<UiMod name="WarTriage" version="3.05" date="2026-09-14" >
+	<UiMod name="WarTriage" version="3.06" date="2026-09-30" >
 		<Author name="Talladego" email="" />
 		<Description text="WarTriage" />
 		<VersionSettings gameVersion="1.4.8" windowsVersion="1.0" savedVariablesVersion="2.0" />

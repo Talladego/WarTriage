@@ -35,6 +35,8 @@ Only players below **hurt threshold** HP% are considered. Dead players use separ
 
 ## Current release
 
+**3.06** — Fix stale scenario HP after death/rez: clear `m_scenarioHitHp` on roster/slot refresh events (`SCENARIO_PLAYERS_LIST_GROUPS_UPDATED`, reservations, group join/leave), matching CustomUI — prevents queueing full-HP allies who still had cached `hits=0`.
+
 **3.05** — Fix #12/#13: rez readiness via hotbar `GetHotbarCooldown` scan (not `GetAbilityCooldown` duration); scenario hit events merge into snapshot HP (`m_scenarioHitHp`).
 
 **3.04** — Correctness pass for issues #3–#11: rez CD via `GetAbilityCooldown` (no hotbar write), scenario/siege roster fallthrough + realm/health guards, empty friendly target no longer aliases self, refresh player name on load, Ctrl+click toggle returns without firing the button, config number clamp + `NormalizeSettings`, friend HP bias selection-only (not rez-safety), warband auto-target slots skip self, `SetPlayersLOS` nil-guards career LOS table.

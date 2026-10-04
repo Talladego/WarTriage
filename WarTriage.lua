@@ -6,7 +6,7 @@
 -- Local variables 
 ----------------------------------------------------------------
 
-local VERSION = 3.05
+local VERSION = 3.06
 local MIN_RANK_CROSSOVER = 5
 local MAX_RANK_CROSSOVER = 30
 local DEFAULT_RANK_CROSSOVER = 15
@@ -1386,6 +1386,13 @@ function WarTriage.RegisterEventHandlers(enabled)
 		RegisterEventHandler(SystemData.Events.GROUP_UPDATED, "WarTriage.GROUP_UPDATED")
 		RegisterEventHandler(SystemData.Events.GROUP_STATUS_UPDATED, "WarTriage.GROUP_STATUS_UPDATED")
 		RegisterEventHandler(SystemData.Events.SCENARIO_GROUP_UPDATED, "WarTriage.SCENARIO_GROUP_UPDATED")
+		-- Roster/slot refreshes (stock ScenarioGroupWindow + CustomUI): drop hits overrides so
+		-- GetScenarioPlayerGroups().health wins until fresh SCENARIO_PLAYER_HITS_UPDATED arrive.
+		-- Without this, a post-death hits=0 can stick after rez and keep queueing full-HP allies for rez.
+		RegisterEventHandler(SystemData.Events.SCENARIO_PLAYERS_LIST_GROUPS_UPDATED, "WarTriage.SCENARIO_ROSTER_REFRESHED")
+		RegisterEventHandler(SystemData.Events.SCENARIO_PLAYERS_LIST_RESERVATIONS_UPDATED, "WarTriage.SCENARIO_ROSTER_REFRESHED")
+		RegisterEventHandler(SystemData.Events.SCENARIO_GROUP_JOIN, "WarTriage.SCENARIO_ROSTER_REFRESHED")
+		RegisterEventHandler(SystemData.Events.SCENARIO_GROUP_LEAVE, "WarTriage.SCENARIO_ROSTER_REFRESHED")
 		RegisterEventHandler(SystemData.Events.SCENARIO_PLAYER_HITS_UPDATED, "WarTriage.SCENARIO_PLAYER_HITS_UPDATED")
 		RegisterEventHandler(SystemData.Events.BATTLEGROUP_UPDATED, "WarTriage.BATTLEGROUP_UPDATED")
 		RegisterEventHandler(SystemData.Events.BATTLEGROUP_MEMBER_UPDATED, "WarTriage.BATTLEGROUP_MEMBER_UPDATED")
@@ -1397,6 +1404,10 @@ function WarTriage.RegisterEventHandlers(enabled)
 		UnregisterEventHandler(SystemData.Events.GROUP_UPDATED, "WarTriage.GROUP_UPDATED")
 		UnregisterEventHandler(SystemData.Events.GROUP_STATUS_UPDATED, "WarTriage.GROUP_STATUS_UPDATED")
 		UnregisterEventHandler(SystemData.Events.SCENARIO_GROUP_UPDATED, "WarTriage.SCENARIO_GROUP_UPDATED")
+		UnregisterEventHandler(SystemData.Events.SCENARIO_PLAYERS_LIST_GROUPS_UPDATED, "WarTriage.SCENARIO_ROSTER_REFRESHED")
+		UnregisterEventHandler(SystemData.Events.SCENARIO_PLAYERS_LIST_RESERVATIONS_UPDATED, "WarTriage.SCENARIO_ROSTER_REFRESHED")
+		UnregisterEventHandler(SystemData.Events.SCENARIO_GROUP_JOIN, "WarTriage.SCENARIO_ROSTER_REFRESHED")
+		UnregisterEventHandler(SystemData.Events.SCENARIO_GROUP_LEAVE, "WarTriage.SCENARIO_ROSTER_REFRESHED")
 		UnregisterEventHandler(SystemData.Events.SCENARIO_PLAYER_HITS_UPDATED, "WarTriage.SCENARIO_PLAYER_HITS_UPDATED")
 		UnregisterEventHandler(SystemData.Events.BATTLEGROUP_UPDATED, "WarTriage.BATTLEGROUP_UPDATED")
 		UnregisterEventHandler(SystemData.Events.BATTLEGROUP_MEMBER_UPDATED, "WarTriage.BATTLEGROUP_MEMBER_UPDATED")
@@ -1850,6 +1861,11 @@ function WarTriage.GROUP_STATUS_UPDATED()
 end
 
 function WarTriage.SCENARIO_GROUP_UPDATED()
+	clearScenarioHitHp()
+	markPlayersDirty()
+end
+
+function WarTriage.SCENARIO_ROSTER_REFRESHED()
 	clearScenarioHitHp()
 	markPlayersDirty()
 end
