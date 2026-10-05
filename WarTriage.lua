@@ -6,7 +6,7 @@
 -- Local variables 
 ----------------------------------------------------------------
 
-local VERSION = 3.06
+local VERSION = 3.07
 local MIN_RANK_CROSSOVER = 5
 local MAX_RANK_CROSSOVER = 30
 local DEFAULT_RANK_CROSSOVER = 15
@@ -73,6 +73,8 @@ local ensureMacroAvailable
 -- Scenario HP overrides from SCENARIO_PLAYER_HITS_UPDATED (CustomUI / ScenarioGroupWindow pattern).
 -- Keyed [groupIndex][groupSlotNum] → hits percent. Snapshot group lists can lag between full refreshes.
 local m_scenarioHitHp = {}
+-- Last raw GetScenarioPlayerGroups() HP per slot. Used to drop a stale hits=0 cache when roster HP goes 0 → living.
+local m_lastScenarioRosterHp = {}
 
 local MapPointTypeFilter = {
 	[SystemData.MapPips.PLAYER] = true,
@@ -1039,6 +1041,7 @@ end
 
 local function clearScenarioHitHp()
 	m_scenarioHitHp = {}
+	m_lastScenarioRosterHp = {}
 end
 
 local function resetRuntimeState()
@@ -2064,9 +2067,23 @@ function WarTriage.BuildFriendlyPlayersSnapshot()
 							health = playerData.healthPercent
 						end
 						-- Prefer live SCENARIO_PLAYER_HITS_UPDATED cache when present (hits==0 is dead).
+						-- If roster HP itself goes 0 → living, drop that slot's cache (rez without a hits event).
+						-- Do not prefer living roster over hits=0 without that transition: roster can stay stale-high after a real death.
 						local gi = tonumber(playerData.sgroupindex)
 						local mi = tonumber(playerData.sgroupslotnum)
 						if gi ~= nil and mi ~= nil then
+							local rosterHealth = tonumber(health)
+							local lastRosterForGroup = m_lastScenarioRosterHp[gi]
+							local lastRoster = lastRosterForGroup and lastRosterForGroup[mi]
+							if lastRoster ~= nil and lastRoster <= 0 and rosterHealth ~= nil and rosterHealth > 0 then
+								if m_scenarioHitHp[gi] then
+									m_scenarioHitHp[gi][mi] = nil
+								end
+							end
+							m_lastScenarioRosterHp[gi] = m_lastScenarioRosterHp[gi] or {}
+							if rosterHealth ~= nil then
+								m_lastScenarioRosterHp[gi][mi] = rosterHealth
+							end
 							local hitsForGroup = m_scenarioHitHp[gi]
 							local hit = hitsForGroup and hitsForGroup[mi]
 							if hit ~= nil then

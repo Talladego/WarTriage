@@ -46,6 +46,10 @@ foreach ($dir in $RuntimeDirs) {
 if (-not (Test-Path -LiteralPath $DestParent)) {
     throw "AddOns parent missing: $DestParent"
 }
+$destLeaf = Split-Path -Leaf $Dest
+if ($destLeaf -ne "WarTriage") {
+    throw "Dest must be a WarTriage folder (leaf name WarTriage), got: $destLeaf ($Dest)"
+}
 
 Write-Host "Repo:   $RepoRoot"
 Write-Host "Dest:   $Dest"
