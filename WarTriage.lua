@@ -6,7 +6,7 @@
 -- Local variables 
 ----------------------------------------------------------------
 
-local VERSION = 3.07
+local VERSION = 3.08
 local MIN_RANK_CROSSOVER = 5
 local MAX_RANK_CROSSOVER = 30
 local DEFAULT_RANK_CROSSOVER = 15
@@ -2038,7 +2038,12 @@ local function pushFriendlyPlayer(playersByName, ownPartyMembers, ownPartyTarget
 end
 
 -- Get all players in party, warband or scenario using stock client APIs.
-function WarTriage.BuildFriendlyPlayersSnapshot()
+-- commitRosterBaseline (default true): record per-slot roster HP and drop stale hits=0 on 0→living.
+-- Pass false from debug helpers so they do not advance cadence state.
+function WarTriage.BuildFriendlyPlayersSnapshot(commitRosterBaseline)
+	if commitRosterBaseline == nil then
+		commitRosterBaseline = true
+	end
 	local players = {}
 	local playersByName = {}
 	local ownPartyMembers, ownPartyTargetEvents = getOwnPartyMembers()
@@ -2073,16 +2078,20 @@ function WarTriage.BuildFriendlyPlayersSnapshot()
 						local mi = tonumber(playerData.sgroupslotnum)
 						if gi ~= nil and mi ~= nil then
 							local rosterHealth = tonumber(health)
-							local lastRosterForGroup = m_lastScenarioRosterHp[gi]
-							local lastRoster = lastRosterForGroup and lastRosterForGroup[mi]
-							if lastRoster ~= nil and lastRoster <= 0 and rosterHealth ~= nil and rosterHealth > 0 then
-								if m_scenarioHitHp[gi] then
-									m_scenarioHitHp[gi][mi] = nil
+							if commitRosterBaseline then
+								local lastRosterForGroup = m_lastScenarioRosterHp[gi]
+								local lastRoster = lastRosterForGroup and lastRosterForGroup[mi]
+								if lastRoster ~= nil and lastRoster <= 0 and rosterHealth ~= nil and rosterHealth > 0 then
+									local cachedHit = m_scenarioHitHp[gi] and tonumber(m_scenarioHitHp[gi][mi])
+									-- Only drop a stale death cache. Keep a live post-rez hits value if it arrived first.
+									if cachedHit ~= nil and cachedHit <= 0 then
+										m_scenarioHitHp[gi][mi] = nil
+									end
 								end
-							end
-							m_lastScenarioRosterHp[gi] = m_lastScenarioRosterHp[gi] or {}
-							if rosterHealth ~= nil then
-								m_lastScenarioRosterHp[gi][mi] = rosterHealth
+								m_lastScenarioRosterHp[gi] = m_lastScenarioRosterHp[gi] or {}
+								if rosterHealth ~= nil then
+									m_lastScenarioRosterHp[gi][mi] = rosterHealth
+								end
 							end
 							local hitsForGroup = m_scenarioHitHp[gi]
 							local hit = hitsForGroup and hitsForGroup[mi]
@@ -2196,7 +2205,7 @@ function WarTriage.RefreshPlayersTransientState()
 end
 
 function WarTriage.GetFriendlyPlayers()
-	local players = WarTriage.BuildFriendlyPlayersSnapshot()
+	local players = WarTriage.BuildFriendlyPlayersSnapshot(false)
 	players = WarTriage.SetPlayersDistance(players)
 	players = WarTriage.SetPlayersLOS(players)
 	sortTrackedPlayers(players)

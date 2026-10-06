@@ -50,6 +50,20 @@ $destLeaf = Split-Path -Leaf $Dest
 if ($destLeaf -ne "WarTriage") {
     throw "Dest must be a WarTriage folder (leaf name WarTriage), got: $destLeaf ($Dest)"
 }
+$destParentLeaf = Split-Path -Leaf $DestParent
+if ($destParentLeaf -ne "AddOns") {
+    throw "Dest parent must be an AddOns folder, got: $destParentLeaf ($DestParent)"
+}
+
+$repoFull = [System.IO.Path]::GetFullPath([string]$RepoRoot).TrimEnd('\', '/')
+$destFull = [System.IO.Path]::GetFullPath($Dest).TrimEnd('\', '/')
+if ($destFull.Equals($repoFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Dest must not be the git clone ($Dest)"
+}
+$repoPrefix = $repoFull + [IO.Path]::DirectorySeparatorChar
+if ($destFull.StartsWith($repoPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Dest must not be inside the git clone ($Dest)"
+}
 
 Write-Host "Repo:   $RepoRoot"
 Write-Host "Dest:   $Dest"

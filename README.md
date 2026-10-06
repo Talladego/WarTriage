@@ -35,6 +35,8 @@ Only players below **hurt threshold** HP% are considered. Dead players use separ
 
 ## Current release
 
+**3.08** — Only drop scenario hit cache on roster 0→living when the cached hit is still `<= 0`; `GetFriendlyPlayers` no longer mutates roster baseline; `deploy.ps1` requires an `AddOns\WarTriage` dest and refuses the git clone.
+
 **3.07** — Drop a per-slot `hits=0` cache when scenario roster HP goes from 0 to living (rez without a hits/roster-refresh event). Guard `tools/deploy.ps1` so `-Dest` must end in `WarTriage`.
 
 **3.06** — Fix stale scenario HP after death/rez: clear `m_scenarioHitHp` on roster/slot refresh events (`SCENARIO_PLAYERS_LIST_GROUPS_UPDATED`, reservations, group join/leave), matching CustomUI — prevents queueing full-HP allies who still had cached `hits=0`.
