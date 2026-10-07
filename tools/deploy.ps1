@@ -15,6 +15,8 @@ param(
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+# Resolve -Dest against PowerShell $PWD (not .NET process CWD) so relative paths match Test-Path/New-Item.
+$Dest = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Dest)
 $DestParent = Split-Path -Parent $Dest
 $ModSrc = Join-Path $RepoRoot "WarTriage.mod"
 
@@ -63,6 +65,12 @@ if ($destFull.Equals($repoFull, [System.StringComparison]::OrdinalIgnoreCase)) {
 $repoPrefix = $repoFull + [IO.Path]::DirectorySeparatorChar
 if ($destFull.StartsWith($repoPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "Dest must not be inside the git clone ($Dest)"
+}
+if (Test-Path -LiteralPath $Dest) {
+    $destItem = Get-Item -LiteralPath $Dest -Force
+    if ($destItem.LinkType) {
+        throw "Dest must not be a $($destItem.LinkType) (refuses prune through junction/symlink): $Dest"
+    }
 }
 
 Write-Host "Repo:   $RepoRoot"

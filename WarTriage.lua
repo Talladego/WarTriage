@@ -6,7 +6,7 @@
 -- Local variables 
 ----------------------------------------------------------------
 
-local VERSION = 3.08
+local VERSION = 3.09
 local MIN_RANK_CROSSOVER = 5
 local MAX_RANK_CROSSOVER = 30
 local DEFAULT_RANK_CROSSOVER = 15
@@ -2038,8 +2038,9 @@ local function pushFriendlyPlayer(playersByName, ownPartyMembers, ownPartyTarget
 end
 
 -- Get all players in party, warband or scenario using stock client APIs.
--- commitRosterBaseline (default true): record per-slot roster HP and drop stale hits=0 on 0→living.
--- Pass false from debug helpers so they do not advance cadence state.
+-- commitRosterBaseline (default true): record per-slot roster HP, drop stale hit-cache on
+-- roster 0↔living transitions, update health history, and write OwnPartyTargetEvents / Player.
+-- Pass false from debug helpers for a read-only snapshot (no cadence / global mutation).
 function WarTriage.BuildFriendlyPlayersSnapshot(commitRosterBaseline)
 	if commitRosterBaseline == nil then
 		commitRosterBaseline = true
@@ -2047,14 +2048,21 @@ function WarTriage.BuildFriendlyPlayersSnapshot(commitRosterBaseline)
 	local players = {}
 	local playersByName = {}
 	local ownPartyMembers, ownPartyTargetEvents = getOwnPartyMembers()
-	WarTriage.OwnPartyTargetEvents = ownPartyTargetEvents
+	if commitRosterBaseline then
+		WarTriage.OwnPartyTargetEvents = ownPartyTargetEvents
+	end
 
-	WarTriage.Player.name = refreshLocalPlayerName()
-	WarTriage.Player.health = getLocalPlayerHealthPercent("snapshot")
-	WarTriage.Player.archeType = ArcheType[GameData.Player.career.line]
-	WarTriage.Player.inMyParty = true
-	WarTriage.Player.targetEvent = ownPartyTargetEvents[WarTriage.Player.name]
-	pushFriendlyPlayer(playersByName, ownPartyMembers, ownPartyTargetEvents, WarTriage.Player.name, WarTriage.Player.health, WarTriage.Player.archeType, "self")
+	local selfName = refreshLocalPlayerName()
+	local selfHealth = getLocalPlayerHealthPercent("snapshot")
+	local selfArcheType = ArcheType[GameData.Player.career.line]
+	if commitRosterBaseline then
+		WarTriage.Player.name = selfName
+		WarTriage.Player.health = selfHealth
+		WarTriage.Player.archeType = selfArcheType
+		WarTriage.Player.inMyParty = true
+		WarTriage.Player.targetEvent = ownPartyTargetEvents[selfName]
+	end
+	pushFriendlyPlayer(playersByName, ownPartyMembers, ownPartyTargetEvents, selfName, selfHealth, selfArcheType, "self")
 
 	local usedScenarioRoster = false
 	if GameData.Player.isInScenario or GameData.Player.isInSiege then
@@ -2072,7 +2080,8 @@ function WarTriage.BuildFriendlyPlayersSnapshot(commitRosterBaseline)
 							health = playerData.healthPercent
 						end
 						-- Prefer live SCENARIO_PLAYER_HITS_UPDATED cache when present (hits==0 is dead).
-						-- If roster HP itself goes 0 → living, drop that slot's cache (rez without a hits event).
+						-- On roster 0→living, drop only a stale death cache (keep a live post-rez hits value).
+						-- On roster living→0, drop a stale positive cache (death without hits=0).
 						-- Do not prefer living roster over hits=0 without that transition: roster can stay stale-high after a real death.
 						local gi = tonumber(playerData.sgroupindex)
 						local mi = tonumber(playerData.sgroupslotnum)
@@ -2081,11 +2090,16 @@ function WarTriage.BuildFriendlyPlayersSnapshot(commitRosterBaseline)
 							if commitRosterBaseline then
 								local lastRosterForGroup = m_lastScenarioRosterHp[gi]
 								local lastRoster = lastRosterForGroup and lastRosterForGroup[mi]
-								if lastRoster ~= nil and lastRoster <= 0 and rosterHealth ~= nil and rosterHealth > 0 then
-									local cachedHit = m_scenarioHitHp[gi] and tonumber(m_scenarioHitHp[gi][mi])
-									-- Only drop a stale death cache. Keep a live post-rez hits value if it arrived first.
-									if cachedHit ~= nil and cachedHit <= 0 then
-										m_scenarioHitHp[gi][mi] = nil
+								local cachedHit = m_scenarioHitHp[gi] and tonumber(m_scenarioHitHp[gi][mi])
+								if lastRoster ~= nil and rosterHealth ~= nil then
+									if lastRoster <= 0 and rosterHealth > 0 then
+										if cachedHit ~= nil and cachedHit <= 0 then
+											m_scenarioHitHp[gi][mi] = nil
+										end
+									elseif lastRoster > 0 and rosterHealth <= 0 then
+										if cachedHit ~= nil and cachedHit > 0 then
+											m_scenarioHitHp[gi][mi] = nil
+										end
 									end
 								end
 								m_lastScenarioRosterHp[gi] = m_lastScenarioRosterHp[gi] or {}
@@ -2154,12 +2168,12 @@ function WarTriage.BuildFriendlyPlayersSnapshot(commitRosterBaseline)
 		end
 	end
 
-	local mergedSelf = playersByName[WarTriage.Player.name]
-	if mergedSelf and mergedSelf.health ~= WarTriage.Player.health then
+	local mergedSelf = playersByName[selfName]
+	if commitRosterBaseline and mergedSelf and mergedSelf.health ~= selfHealth then
 		appendTrace(
 			"self-health-mismatch",
 			L"Snapshot direct self HP is "
-			.. towstring(WarTriage.Player.health)
+			.. towstring(selfHealth)
 			.. L"%, but merged self HP is "
 			.. towstring(mergedSelf.health)
 			.. L"% from "
@@ -2170,10 +2184,14 @@ function WarTriage.BuildFriendlyPlayersSnapshot(commitRosterBaseline)
 	end
 
 	for _, player in pairs(playersByName) do
-		updatePlayerHealthHistory(player)
+		if commitRosterBaseline then
+			updatePlayerHealthHistory(player)
+		end
 		players[#players + 1] = player
 	end
-	cleanupPlayerHealthHistory(players)
+	if commitRosterBaseline then
+		cleanupPlayerHealthHistory(players)
+	end
 
 	return players
 end
